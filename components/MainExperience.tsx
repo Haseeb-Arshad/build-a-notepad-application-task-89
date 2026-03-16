@@ -1,175 +1,283 @@
 "use client";
 
-import { ChangeEvent, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-type FileFormat = "txt" | "rtf";
-type NoticeType = "success" | "error" | "info";
+type DocFormat = "txt" | "rtf";
+type Notice = { type: "success" | "error" | "info"; text: string } | null;
 
-type Notice = {
-  type: NoticeType;
-  message: string;
-} | null;
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function countWords(value: string): number {
-  const tokens = value.trim().match(/\S+/g);
-  return tokens ? tokens.length : 0;
-}
-
-function getLineAndColumn(content: string, cursorIndex: number): { line: number; column: number } {
-  const safeIndex = Math.max(0, Math.min(cursorIndex, content.length));
-  const upToCursor = content.slice(0, safeIndex);
-  const lines = upToCursor.split("\n");
-  return {
-    line: lines.length,
-    column: (lines[lines.length - 1]?.length ?? 0) + 1,
-  };
-}
-
-function parseRtfToText(rtf: string): string {
-  // Lightweight RTF to text conversion for common files. It is not a full parser,
-  // but handles most practical cases (control words, escaped hex, paragraph tags).
-  return rtf
+function rtfToPlainText(input: string): string {
+  return input
     .replace(/\\par[d]?/g, "\n")
-    .replace(/\\'[0-9a-fA-F]{2}/g, "")
-    .replace(/\\[a-z]+-?\d* ?/g, "")
+    .replace(/\\'[0-9a-fA-F]{2}/g, (match) =>
+      String.fromCharCode(parseInt(match.slice(2), 16)),
+    )
+    .replace(/\\[a-zA-Z]+-?\d* ?/g, "")
     .replace(/[{}]/g, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+    .replace(/\r\n/g, "\n");
 }
 
-function plainTextToRtf(text: string): string {
-  const escaped = text
+function escapeRtfText(text: string): string {
+  return text
     .replace(/\\/g, "\\\\")
     .replace(/{/g, "\\{")
     .replace(/}/g, "\\}")
-    .replace(/\n/g, "\\par\n");
-  return `{\\rtf1\\ansi\n${escaped}\n}`;
+    .replace(/\n/g, "\\line ");
 }
 
-async function writeFileToDisk(
-  handle: any,
-  data: string,
-  format: FileFormat,
-): Promise<void> {
-  const writable = await handle.createWritable();
-  await writable.write(format === "rtf" ? plainTextToRtf(data) : data);
-  await writable.close();
+function plainTextToHtml(text: string): string {
+  const escaped = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  return escaped.replace(/\n/g, "<br>");
 }
 
-function downloadBlob(content: string, format: FileFormat, fileName: string): void {
-  const mime = format === "rtf" ? "application/rtf;charset=utf-8" : "text/plain;charset=utf-8";
-  const finalContent = format === "rtf" ? plainTextToRtf(content) : content;
-  const blob = new Blob([finalContent], { type: mime });
-  const url = URL.createObjectURL(blob);
+function htmlToRtf(html: string): string {
+  if (typeof window === "undefined") return `{\\rtf1\\ansi\n}`;
 
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = fileName;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(`<div>${html}</div>`, "text/html");
+  const root = doc.body.firstElementChild as HTMLElement | null;
 
-  URL.revokeObjectURL(url);
-}
+  const walk = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return escapeRtfText(node.textContent ?? "");
+    }
 
-export default function MainExperience() {
-  const editorRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+    if (node.nodeType !== Node.ELEMENT_NODE) return "";
 
-  const [content, setContent] = useState<string>("");
-  const [savedSnapshot, setSavedSnapshot] = useState<string>("");
-  const [fileName, setFileName] = useState<string>("Untitled.txt");
-  const [format, setFormat] = useState<FileFormat>("txt");
-  const [fileHandle, setFileHandle] = useState<any | null>(null);
+    const el = node as HTMLElement;
+    const tag = el.tagName.toLowerCase();
+    const content = Array.from(el.childNodes).map(walk).join("");
 
-  const [historyPast, setHistoryPast] = useState<string[]>([]);
-  const [historyFuture, setHistoryFuture] = useState<string[]>([]);
-
-  const [selectionStart, setSelectionStart] = useState<number>(0);
-  const [selectionEnd, setSelectionEnd] = useState<number>(0);
-  const [wordWrap, setWordWrap] = useState<boolean>(true);
-
-  const [showFindReplace, setShowFindReplace] = useState<boolean>(false);
-  const [findValue, setFindValue] = useState<string>("");
-  const [replaceValue, setReplaceValue] = useState<string>("");
-  const [matchCase, setMatchCase] = useState<boolean>(false);
-
-  const [notice, setNotice] = useState<Notice>(null);
-
-  const canUndo = historyPast.length > 0;
-  const canRedo = historyFuture.length > 0;
-  const isDirty = content !== savedSnapshot;
-
-  const { line, column } = useMemo(
-    () => getLineAndColumn(content, selectionStart),
-    [content, selectionStart],
-  );
-
-  const wordCount = useMemo(() => countWords(content), [content]);
-
-  const setTransientNotice = (next: Notice) => {
-    setNotice(next);
-    if (next) {
-      window.setTimeout(() => setNotice(null), 3200);
+    switch (tag) {
+      case "b":
+      case "strong":
+        return `\\b ${content}\\b0 `;
+      case "i":
+      case "em":
+        return `\\i ${content}\\i0 `;
+      case "u":
+        return `\\ul ${content}\\ul0 `;
+      case "br":
+        return "\\line ";
+      case "p":
+      case "div":
+        return `${content}\\par `;
+      default:
+        return content;
     }
   };
 
+  const rtfBody = walk(root ?? doc.body);
+  return `{\\rtf1\\ansi\\deff0\n${rtfBody}\n}`;
+}
+
+function getAllMatches(haystack: string, needle: string, matchCase: boolean): number[] {
+  if (!needle) return [];
+  const source = matchCase ? haystack : haystack.toLowerCase();
+  const query = matchCase ? needle : needle.toLowerCase();
+
+  const indexes: number[] = [];
+  let cursor = 0;
+  while (cursor <= source.length) {
+    const found = source.indexOf(query, cursor);
+    if (found === -1) break;
+    indexes.push(found);
+    cursor = found + Math.max(needle.length, 1);
+  }
+  return indexes;
+}
+
+export default function MainExperience() {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const richEditorRef = useRef<HTMLDivElement | null>(null);
+  const openFallbackRef = useRef<HTMLInputElement | null>(null);
+
+  const [docName, setDocName] = useState("Untitled");
+  const [format, setFormat] = useState<DocFormat>("txt");
+  const [wordWrap, setWordWrap] = useState(true);
+  const [isDirty, setIsDirty] = useState(false);
+
+  const [textValue, setTextValue] = useState("");
+  const [richHtml, setRichHtml] = useState("");
+
+  const [activeHandle, setActiveHandle] = useState<any | null>(null);
+  const [notice, setNotice] = useState<Notice>(null);
+
+  const [showFind, setShowFind] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [replaceQuery, setReplaceQuery] = useState("");
+  const [matchCase, setMatchCase] = useState(false);
+  const [matchCursor, setMatchCursor] = useState(-1);
+
+  const [line, setLine] = useState(1);
+  const [column, setColumn] = useState(1);
+
+  const activeText = useMemo(() => {
+    if (format === "txt") return textValue;
+    return richEditorRef.current?.innerText?.replace(/\u00A0/g, " ") ?? "";
+  }, [format, textValue, richHtml]);
+
+  const words = useMemo(() => {
+    const trimmed = activeText.trim();
+    if (!trimmed) return 0;
+    return trimmed.split(/\s+/).length;
+  }, [activeText]);
+
+  const matches = useMemo(
+    () => getAllMatches(activeText, findQuery, matchCase),
+    [activeText, findQuery, matchCase],
+  );
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), 2800);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  useEffect(() => {
+    const handleSelection = () => {
+      if (format !== "rtf") return;
+      const editor = richEditorRef.current;
+      if (!editor) return;
+
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0) return;
+      const range = selection.getRangeAt(0);
+      if (!editor.contains(range.endContainer)) return;
+
+      const preRange = range.cloneRange();
+      preRange.selectNodeContents(editor);
+      preRange.setEnd(range.endContainer, range.endOffset);
+      const offset = preRange.toString().length;
+      const before = (editor.innerText || "").slice(0, offset);
+      const segments = before.split("\n");
+      setLine(Math.max(segments.length, 1));
+      setColumn((segments[segments.length - 1]?.length ?? 0) + 1);
+    };
+
+    document.addEventListener("selectionchange", handleSelection);
+    return () => document.removeEventListener("selectionchange", handleSelection);
+  }, [format]);
+
+  const setNoticeSafe = (type: Notice extends null ? never : "success" | "error" | "info", text: string) => {
+    setNotice({ type, text });
+  };
+
   const focusEditor = () => {
-    editorRef.current?.focus();
+    if (format === "txt") textareaRef.current?.focus();
+    else richEditorRef.current?.focus();
   };
 
-  const pushHistoryAndUpdate = (nextValue: string) => {
-    if (nextValue === content) return;
-    setHistoryPast((prev) => [...prev.slice(-200), content]);
-    setHistoryFuture([]);
-    setContent(nextValue);
+  const updateTxtCursor = () => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const before = ta.value.slice(0, ta.selectionStart);
+    const segments = before.split("\n");
+    setLine(segments.length);
+    setColumn((segments[segments.length - 1]?.length ?? 0) + 1);
   };
 
-  const confirmDiscardIfDirty = (): boolean => {
+  const applyPlainText = (nextText: string) => {
+    if (format === "txt") {
+      setTextValue(nextText);
+    } else {
+      const editor = richEditorRef.current;
+      if (editor) {
+        editor.innerHTML = plainTextToHtml(nextText);
+        setRichHtml(editor.innerHTML);
+      }
+    }
+    setIsDirty(true);
+  };
+
+  const confirmDiscardIfNeeded = (): boolean => {
     if (!isDirty) return true;
-    return window.confirm("You have unsaved changes. Continue and discard them?");
+    return window.confirm("You have unsaved changes. Discard them?");
   };
 
-  const handleNew = () => {
-    if (!confirmDiscardIfDirty()) return;
+  const newDocument = (nextFormat: DocFormat = format) => {
+    if (!confirmDiscardIfNeeded()) return;
 
-    setContent("");
-    setSavedSnapshot("");
-    setFileName("Untitled.txt");
-    setFormat("txt");
-    setFileHandle(null);
-    setHistoryPast([]);
-    setHistoryFuture([]);
-    setSelectionStart(0);
-    setSelectionEnd(0);
-    setTransientNotice({ type: "info", message: "Started a new document." });
+    setDocName("Untitled");
+    setFormat(nextFormat);
+    setTextValue("");
+    setRichHtml("");
+    setActiveHandle(null);
+    setIsDirty(false);
+    setLine(1);
+    setColumn(1);
+    setMatchCursor(-1);
+
+    if (nextFormat === "rtf") {
+      requestAnimationFrame(() => {
+        if (richEditorRef.current) richEditorRef.current.innerHTML = "";
+      });
+    }
+
+    setNoticeSafe("info", `New ${nextFormat.toUpperCase()} document created`);
+  };
+
+  const runCommand = async (cmd: "cut" | "copy" | "paste" | "undo" | "redo" | "bold" | "italic" | "underline") => {
     focusEditor();
+
+    try {
+      if (cmd === "paste" && !document.queryCommandSupported("paste")) {
+        const clip = await navigator.clipboard.readText();
+        if (format === "txt") {
+          const ta = textareaRef.current;
+          if (!ta) return;
+          const start = ta.selectionStart;
+          const end = ta.selectionEnd;
+          const next = ta.value.slice(0, start) + clip + ta.value.slice(end);
+          setTextValue(next);
+          setIsDirty(true);
+          requestAnimationFrame(() => {
+            ta.selectionStart = ta.selectionEnd = start + clip.length;
+            updateTxtCursor();
+          });
+        } else {
+          document.execCommand("insertText", false, clip);
+          setRichHtml(richEditorRef.current?.innerHTML ?? "");
+          setIsDirty(true);
+        }
+        return;
+      }
+
+      const ok = document.execCommand(cmd);
+      if (!ok) {
+        setNoticeSafe("error", `Could not execute ${cmd}. Browser blocked the command.`);
+        return;
+      }
+
+      if (cmd !== "copy") {
+        if (format === "txt") setTextValue(textareaRef.current?.value ?? "");
+        else setRichHtml(richEditorRef.current?.innerHTML ?? "");
+        setIsDirty(true);
+      }
+    } catch (error) {
+      setNoticeSafe("error", `Failed to run ${cmd}: ${(error as Error).message}`);
+    }
   };
 
-  const handleOpenFallback = () => {
-    fileInputRef.current?.click();
-  };
+  const openUsingFallbackInput = () => openFallbackRef.current?.click();
 
-  const openWithPicker = async () => {
-    if (!confirmDiscardIfDirty()) return;
+  const handleOpen = async () => {
+    if (!confirmDiscardIfNeeded()) return;
 
     try {
       const picker = (window as any).showOpenFilePicker;
       if (!picker) {
-        handleOpenFallback();
+        openUsingFallbackInput();
         return;
       }
 
       const [handle] = await picker({
         multiple: false,
-        excludeAcceptAllOption: false,
         types: [
           {
-            description: "Text and RTF",
+            description: "Text and Rich Text",
             accept: {
               "text/plain": [".txt"],
               "application/rtf": [".rtf"],
@@ -179,509 +287,486 @@ export default function MainExperience() {
       });
 
       const file = await handle.getFile();
-      const text = await file.text();
-      const incomingFormat: FileFormat = file.name.toLowerCase().endsWith(".rtf") ? "rtf" : "txt";
-      const parsed = incomingFormat === "rtf" ? parseRtfToText(text) : text;
+      const raw = await file.text();
+      const ext = file.name.toLowerCase().endsWith(".rtf") ? "rtf" : "txt";
+      const name = file.name.replace(/\.(txt|rtf)$/i, "") || "Untitled";
 
-      setContent(parsed);
-      setSavedSnapshot(parsed);
-      setFileName(file.name);
-      setFormat(incomingFormat);
-      setFileHandle(handle);
-      setHistoryPast([]);
-      setHistoryFuture([]);
-      setSelectionStart(0);
-      setSelectionEnd(0);
-      setTransientNotice({ type: "success", message: `Opened ${file.name}` });
-      focusEditor();
-    } catch (error: unknown) {
-      if ((error as { name?: string })?.name === "AbortError") return;
-      setTransientNotice({ type: "error", message: "Unable to open file. Please try again." });
-    }
-  };
+      setDocName(name);
+      setFormat(ext);
+      setActiveHandle(handle);
+      setIsDirty(false);
 
-  const handleFileInput = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-
-    if (!confirmDiscardIfDirty()) return;
-
-    try {
-      const text = await file.text();
-      const incomingFormat: FileFormat = file.name.toLowerCase().endsWith(".rtf") ? "rtf" : "txt";
-      const parsed = incomingFormat === "rtf" ? parseRtfToText(text) : text;
-
-      setContent(parsed);
-      setSavedSnapshot(parsed);
-      setFileName(file.name);
-      setFormat(incomingFormat);
-      setFileHandle(null);
-      setHistoryPast([]);
-      setHistoryFuture([]);
-      setSelectionStart(0);
-      setSelectionEnd(0);
-      setTransientNotice({ type: "success", message: `Opened ${file.name}` });
-      focusEditor();
-    } catch {
-      setTransientNotice({ type: "error", message: "Failed to read this file." });
-    }
-  };
-
-  const saveAs = async () => {
-    try {
-      const base = fileName.replace(/\.(txt|rtf)$/i, "");
-      const suggestedName = `${base || "Untitled"}.${format}`;
-      const savePicker = (window as any).showSaveFilePicker;
-
-      if (savePicker) {
-        const handle = await savePicker({
-          suggestedName,
-          types: [
-            {
-              description: format === "rtf" ? "Rich Text" : "Text Document",
-              accept:
-                format === "rtf"
-                  ? { "application/rtf": [".rtf"] }
-                  : { "text/plain": [".txt"] },
-            },
-          ],
+      if (ext === "txt") {
+        setTextValue(raw);
+      } else {
+        const plain = raw.trimStart().startsWith("{\\rtf") ? rtfToPlainText(raw) : raw;
+        const html = plainTextToHtml(plain);
+        setRichHtml(html);
+        requestAnimationFrame(() => {
+          if (richEditorRef.current) richEditorRef.current.innerHTML = html;
         });
+      }
 
-        await writeFileToDisk(handle, content, format);
-        const nextName = handle.name ?? suggestedName;
-        setFileHandle(handle);
-        setFileName(nextName);
-        setSavedSnapshot(content);
-        setTransientNotice({ type: "success", message: `Saved ${nextName}` });
+      setNoticeSafe("success", `${file.name} opened successfully`);
+    } catch (error: any) {
+      if (error?.name === "AbortError") return;
+      setNoticeSafe("error", `Could not open file: ${error?.message ?? "Unknown error"}`);
+    }
+  };
+
+  const saveBlobAsDownload = (filename: string, content: string, mime: string) => {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const getPayloadForSave = () => {
+    if (format === "txt") {
+      return {
+        content: textValue,
+        mime: "text/plain;charset=utf-8",
+        ext: "txt" as const,
+      };
+    }
+
+    const html = richEditorRef.current?.innerHTML ?? richHtml;
+    return {
+      content: htmlToRtf(html),
+      mime: "application/rtf;charset=utf-8",
+      ext: "rtf" as const,
+    };
+  };
+
+  const writeToHandle = async (handle: any, content: string) => {
+    const writable = await handle.createWritable();
+    await writable.write(content);
+    await writable.close();
+  };
+
+  const handleSaveAs = async () => {
+    const { content, mime, ext } = getPayloadForSave();
+    const suggested = `${docName || "Untitled"}.${ext}`;
+
+    try {
+      const picker = (window as any).showSaveFilePicker;
+      if (!picker) {
+        saveBlobAsDownload(suggested, content, mime);
+        setIsDirty(false);
+        setNoticeSafe("success", "File downloaded (Save As fallback)");
         return;
       }
 
-      downloadBlob(content, format, suggestedName);
-      setFileName(suggestedName);
-      setSavedSnapshot(content);
-      setTransientNotice({
-        type: "info",
-        message: "Downloaded file (browser mode). Use a desktop shell for full file-system persistence.",
+      const handle = await picker({
+        suggestedName: suggested,
+        types: [
+          {
+            description: ext === "txt" ? "Text file" : "Rich Text file",
+            accept:
+              ext === "txt"
+                ? { "text/plain": [".txt"] }
+                : { "application/rtf": [".rtf"] },
+          },
+        ],
       });
-    } catch (error: unknown) {
-      if ((error as { name?: string })?.name === "AbortError") return;
-      setTransientNotice({ type: "error", message: "Save As failed. Check file permissions and try again." });
+
+      await writeToHandle(handle, content);
+      setActiveHandle(handle);
+      setIsDirty(false);
+      setNoticeSafe("success", `${suggested} saved`);
+    } catch (error: any) {
+      if (error?.name === "AbortError") return;
+      setNoticeSafe("error", `Save As failed: ${error?.message ?? "Unknown error"}`);
     }
   };
 
-  const save = async () => {
+  const handleSave = async () => {
+    const { content, mime, ext } = getPayloadForSave();
+
     try {
-      if (!fileHandle) {
-        await saveAs();
+      if (activeHandle) {
+        await writeToHandle(activeHandle, content);
+        setIsDirty(false);
+        setNoticeSafe("success", "Document saved");
         return;
       }
 
-      await writeFileToDisk(fileHandle, content, format);
-      setSavedSnapshot(content);
-      setTransientNotice({ type: "success", message: `Saved ${fileName}` });
-    } catch {
-      setTransientNotice({
-        type: "error",
-        message: "Could not save to this location. Try Save As to choose a new destination.",
-      });
+      const defaultFile = `${docName || "Untitled"}.${ext}`;
+      saveBlobAsDownload(defaultFile, content, mime);
+      setIsDirty(false);
+      setNoticeSafe("info", "No file handle yet. Downloaded file instead.");
+    } catch (error: any) {
+      setNoticeSafe("error", `Save failed: ${error?.message ?? "Unknown error"}`);
     }
   };
 
-  const updateSelectionFromEditor = () => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    setSelectionStart(editor.selectionStart ?? 0);
-    setSelectionEnd(editor.selectionEnd ?? 0);
-  };
-
-  const applyEditorChange = (next: string) => {
-    pushHistoryAndUpdate(next);
-  };
-
-  const handleEditorInput = (event: ChangeEvent<HTMLTextAreaElement>) => {
-    applyEditorChange(event.target.value);
-    setSelectionStart(event.target.selectionStart ?? 0);
-    setSelectionEnd(event.target.selectionEnd ?? 0);
-  };
-
-  const undo = () => {
-    if (!canUndo) return;
-    const previous = historyPast[historyPast.length - 1];
-    setHistoryPast((prev) => prev.slice(0, -1));
-    setHistoryFuture((prev) => [content, ...prev].slice(0, 200));
-    setContent(previous);
-    setTransientNotice({ type: "info", message: "Undo" });
-  };
-
-  const redo = () => {
-    if (!canRedo) return;
-    const next = historyFuture[0];
-    setHistoryFuture((prev) => prev.slice(1));
-    setHistoryPast((prev) => [...prev.slice(-200), content]);
-    setContent(next);
-    setTransientNotice({ type: "info", message: "Redo" });
-  };
-
-  const cutSelection = async () => {
-    const editor = editorRef.current;
-    if (!editor) return;
-
-    const start = editor.selectionStart;
-    const end = editor.selectionEnd;
-    if (start === end) return;
-
-    const selected = content.slice(start, end);
-
-    try {
-      await navigator.clipboard.writeText(selected);
-      const next = content.slice(0, start) + content.slice(end);
-      pushHistoryAndUpdate(next);
-      window.requestAnimationFrame(() => {
-        editor.focus();
-        editor.setSelectionRange(start, start);
-        updateSelectionFromEditor();
-      });
-      setTransientNotice({ type: "success", message: "Cut to clipboard" });
-    } catch {
-      setTransientNotice({ type: "error", message: "Clipboard permission denied for cut." });
+  const selectRangeByOffsets = (start: number, end: number) => {
+    if (format === "txt") {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(start, end);
+      updateTxtCursor();
+      return;
     }
-  };
 
-  const copySelection = async () => {
-    const editor = editorRef.current;
+    const editor = richEditorRef.current;
     if (!editor) return;
 
-    const start = editor.selectionStart;
-    const end = editor.selectionEnd;
-    if (start === end) return;
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+    let node: Node | null = walker.nextNode();
+    let counted = 0;
 
-    try {
-      await navigator.clipboard.writeText(content.slice(start, end));
-      setTransientNotice({ type: "success", message: "Copied to clipboard" });
-    } catch {
-      setTransientNotice({ type: "error", message: "Clipboard permission denied for copy." });
+    let startNode: Node | null = null;
+    let endNode: Node | null = null;
+    let startOffset = 0;
+    let endOffset = 0;
+
+    while (node) {
+      const length = node.textContent?.length ?? 0;
+      const nodeStart = counted;
+      const nodeEnd = counted + length;
+
+      if (!startNode && start >= nodeStart && start <= nodeEnd) {
+        startNode = node;
+        startOffset = start - nodeStart;
+      }
+
+      if (!endNode && end >= nodeStart && end <= nodeEnd) {
+        endNode = node;
+        endOffset = end - nodeStart;
+      }
+
+      counted = nodeEnd;
+      node = walker.nextNode();
     }
-  };
 
-  const pasteAtCursor = async () => {
-    const editor = editorRef.current;
-    if (!editor) return;
+    if (!startNode || !endNode) return;
 
-    try {
-      const pasted = await navigator.clipboard.readText();
-      const start = editor.selectionStart;
-      const end = editor.selectionEnd;
-      const next = content.slice(0, start) + pasted + content.slice(end);
-      pushHistoryAndUpdate(next);
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.setStart(startNode, startOffset);
+    range.setEnd(endNode, endOffset);
 
-      const caret = start + pasted.length;
-      window.requestAnimationFrame(() => {
-        editor.focus();
-        editor.setSelectionRange(caret, caret);
-        updateSelectionFromEditor();
-      });
-      setTransientNotice({ type: "success", message: "Pasted from clipboard" });
-    } catch {
-      setTransientNotice({ type: "error", message: "Clipboard read failed. Browser may require permission." });
-    }
-  };
-
-  const applyInlineWrapper = (prefix: string, suffix = prefix) => {
-    const editor = editorRef.current;
-    if (!editor) return;
-
-    const start = editor.selectionStart;
-    const end = editor.selectionEnd;
-    const selected = content.slice(start, end) || "text";
-
-    const wrapped = `${prefix}${selected}${suffix}`;
-    const next = content.slice(0, start) + wrapped + content.slice(end);
-    pushHistoryAndUpdate(next);
-
-    const nextStart = start + prefix.length;
-    const nextEnd = nextStart + selected.length;
-
-    window.requestAnimationFrame(() => {
-      editor.focus();
-      editor.setSelectionRange(nextStart, nextEnd);
-      updateSelectionFromEditor();
-    });
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    editor.focus();
   };
 
   const findNext = () => {
-    const editor = editorRef.current;
-    if (!editor) return;
-
-    if (!findValue.trim()) {
-      setTransientNotice({ type: "error", message: "Enter text in Find to search." });
+    if (!findQuery) {
+      setNoticeSafe("info", "Enter text to find first.");
       return;
     }
 
-    const source = matchCase ? content : content.toLowerCase();
-    const query = matchCase ? findValue : findValue.toLowerCase();
-
-    const startFrom = Math.max(selectionEnd, 0);
-    let index = source.indexOf(query, startFrom);
-    if (index < 0 && startFrom > 0) {
-      index = source.indexOf(query, 0);
-    }
-
-    if (index < 0) {
-      setTransientNotice({ type: "info", message: `No matches for \"${findValue}\".` });
+    if (matches.length === 0) {
+      setMatchCursor(-1);
+      setNoticeSafe("info", `No matches for "${findQuery}"`);
       return;
     }
 
-    const to = index + findValue.length;
-    editor.focus();
-    editor.setSelectionRange(index, to);
-    setSelectionStart(index);
-    setSelectionEnd(to);
+    const next = (matchCursor + 1) % matches.length;
+    setMatchCursor(next);
+    const start = matches[next];
+    selectRangeByOffsets(start, start + findQuery.length);
   };
 
   const replaceCurrent = () => {
-    const editor = editorRef.current;
-    if (!editor) return;
+    if (!findQuery) return;
+    if (matches.length === 0) return;
 
-    if (!findValue.trim()) {
-      setTransientNotice({ type: "error", message: "Enter text in Find to replace." });
-      return;
-    }
+    const targetIndex = matchCursor >= 0 ? matches[matchCursor] : matches[0];
+    const nextText =
+      activeText.slice(0, targetIndex) + replaceQuery + activeText.slice(targetIndex + findQuery.length);
 
-    const start = editor.selectionStart;
-    const end = editor.selectionEnd;
-    const selected = content.slice(start, end);
-    const matchSelected = matchCase
-      ? selected === findValue
-      : selected.toLowerCase() === findValue.toLowerCase();
-
-    if (!matchSelected) {
-      findNext();
-      return;
-    }
-
-    const next = content.slice(0, start) + replaceValue + content.slice(end);
-    pushHistoryAndUpdate(next);
-
-    const nextCaret = start + replaceValue.length;
-    window.requestAnimationFrame(() => {
-      editor.focus();
-      editor.setSelectionRange(nextCaret, nextCaret);
-      setSelectionStart(nextCaret);
-      setSelectionEnd(nextCaret);
-    });
+    applyPlainText(nextText);
+    setNoticeSafe("success", "Replaced current match");
+    setMatchCursor(-1);
   };
 
   const replaceAll = () => {
-    if (!findValue.trim()) {
-      setTransientNotice({ type: "error", message: "Enter text in Find to replace all." });
+    if (!findQuery) return;
+    if (matches.length === 0) {
+      setNoticeSafe("info", "No matches to replace.");
       return;
     }
 
-    const regex = new RegExp(escapeRegExp(findValue), matchCase ? "g" : "gi");
-    const matches = content.match(regex);
-    const count = matches?.length ?? 0;
+    const src = matchCase ? activeText : activeText.toLowerCase();
+    const query = matchCase ? findQuery : findQuery.toLowerCase();
 
-    if (count === 0) {
-      setTransientNotice({ type: "info", message: `No matches for \"${findValue}\".` });
-      return;
+    let index = 0;
+    let output = "";
+    let replaced = 0;
+
+    while (index < activeText.length) {
+      const found = src.indexOf(query, index);
+      if (found === -1) {
+        output += activeText.slice(index);
+        break;
+      }
+      output += activeText.slice(index, found) + replaceQuery;
+      index = found + findQuery.length;
+      replaced += 1;
     }
 
-    const next = content.replace(regex, replaceValue);
-    pushHistoryAndUpdate(next);
-    setTransientNotice({ type: "success", message: `Replaced ${count} occurrence${count > 1 ? "s" : ""}.` });
+    applyPlainText(output);
+    setMatchCursor(-1);
+    setNoticeSafe("success", `Replaced ${replaced} match${replaced === 1 ? "" : "es"}`);
   };
 
-  const noticeClasses =
-    notice?.type === "error"
-      ? "border-rose-400/30 bg-rose-500/15 text-rose-100"
-      : notice?.type === "success"
-        ? "border-emerald-400/30 bg-emerald-500/15 text-emerald-100"
-        : "border-cyan-400/30 bg-cyan-500/15 text-cyan-100";
+  useEffect(() => {
+    const onKeydown = (event: KeyboardEvent) => {
+      const cmd = event.ctrlKey || event.metaKey;
+      if (!cmd) return;
+
+      const key = event.key.toLowerCase();
+      if (key === "s") {
+        event.preventDefault();
+        handleSave();
+      }
+      if (key === "f") {
+        event.preventDefault();
+        setShowFind(true);
+      }
+      if (format === "rtf" && ["b", "i", "u"].includes(key)) {
+        event.preventDefault();
+        if (key === "b") runCommand("bold");
+        if (key === "i") runCommand("italic");
+        if (key === "u") runCommand("underline");
+      }
+    };
+
+    window.addEventListener("keydown", onKeydown);
+    return () => window.removeEventListener("keydown", onKeydown);
+  }, [format, richHtml, textValue, activeHandle]);
 
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col p-4 md:p-6">
+    <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-4 md:px-8">
       <input
-        ref={fileInputRef}
+        ref={openFallbackRef}
         type="file"
-        className="hidden"
         accept=".txt,.rtf,text/plain,application/rtf"
-        onChange={handleFileInput}
+        className="hidden"
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          if (!file) return;
+
+          try {
+            const content = await file.text();
+            const ext: DocFormat = file.name.toLowerCase().endsWith(".rtf") ? "rtf" : "txt";
+            const name = file.name.replace(/\.(txt|rtf)$/i, "") || "Untitled";
+
+            setDocName(name);
+            setFormat(ext);
+            setActiveHandle(null);
+            setIsDirty(false);
+
+            if (ext === "txt") {
+              setTextValue(content);
+            } else {
+              const plain = content.trimStart().startsWith("{\\rtf") ? rtfToPlainText(content) : content;
+              const html = plainTextToHtml(plain);
+              setRichHtml(html);
+              requestAnimationFrame(() => {
+                if (richEditorRef.current) richEditorRef.current.innerHTML = html;
+              });
+            }
+
+            setNoticeSafe("success", `${file.name} opened`);
+          } catch (error: any) {
+            setNoticeSafe("error", `Could not read file: ${error?.message ?? "Unknown error"}`);
+          } finally {
+            e.currentTarget.value = "";
+          }
+        }}
       />
 
-      <header className="mb-4 rounded-2xl border border-slate-800 bg-slate-900/80 p-4 shadow-xl shadow-black/20 backdrop-blur">
+      <header className="mb-4 rounded-xl border border-slate-800 bg-slate-900/80 p-4 shadow-lg shadow-black/20">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h1 className="text-xl font-semibold tracking-tight md:text-2xl">Notepad Pro Workspace</h1>
-            <p className="text-sm text-slate-400">
-              Create, open, edit, and save <span className="font-medium text-slate-200">.txt</span> and{" "}
-              <span className="font-medium text-slate-200">.rtf</span> documents.
-            </p>
+            <h1 className="text-xl font-semibold tracking-tight text-white md:text-2xl">Notepad Pro</h1>
+            <p className="text-sm text-slate-400">Create, open, edit, and save TXT/RTF files with desktop-like workflows.</p>
           </div>
-          <div className="rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-1.5 text-xs text-slate-300">
-            {fileName}
-            {isDirty ? " • Unsaved" : " • Saved"}
+          <div className="text-xs text-slate-400">
+            <span className="rounded-md border border-slate-700 bg-slate-800 px-2 py-1">{isDirty ? "Unsaved changes" : "All changes saved"}</span>
           </div>
         </div>
-      </header>
 
-      <section className="mb-3 rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-lg shadow-black/10">
-        <div className="flex flex-wrap items-center gap-2">
-          <button onClick={handleNew} className="rounded-md bg-slate-800 px-3 py-1.5 text-sm hover:bg-slate-700">
-            New
-          </button>
-          <button onClick={openWithPicker} className="rounded-md bg-slate-800 px-3 py-1.5 text-sm hover:bg-slate-700">
-            Open
-          </button>
-          <button onClick={save} className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm hover:bg-indigo-500">
-            Save
-          </button>
-          <button onClick={saveAs} className="rounded-md bg-slate-800 px-3 py-1.5 text-sm hover:bg-slate-700">
-            Save As
-          </button>
+        <div className="mt-4 grid gap-3 lg:grid-cols-2">
+          <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+            <div className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">File</div>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={() => newDocument("txt")} className="rounded-md bg-sky-600 px-3 py-2 text-sm font-medium text-white hover:bg-sky-500">New TXT</button>
+              <button onClick={() => newDocument("rtf")} className="rounded-md bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-500">New RTF</button>
+              <button onClick={handleOpen} className="rounded-md bg-slate-700 px-3 py-2 text-sm font-medium hover:bg-slate-600">Open</button>
+              <button onClick={handleSave} className="rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-500">Save</button>
+              <button onClick={handleSaveAs} className="rounded-md bg-slate-700 px-3 py-2 text-sm font-medium hover:bg-slate-600">Save As</button>
+            </div>
+          </div>
 
-          <span className="mx-1 h-6 w-px bg-slate-700" />
-
-          <button
-            onClick={undo}
-            disabled={!canUndo}
-            className="rounded-md bg-slate-800 px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-40 hover:bg-slate-700"
-          >
-            Undo
-          </button>
-          <button
-            onClick={redo}
-            disabled={!canRedo}
-            className="rounded-md bg-slate-800 px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-40 hover:bg-slate-700"
-          >
-            Redo
-          </button>
-          <button onClick={cutSelection} className="rounded-md bg-slate-800 px-3 py-1.5 text-sm hover:bg-slate-700">
-            Cut
-          </button>
-          <button onClick={copySelection} className="rounded-md bg-slate-800 px-3 py-1.5 text-sm hover:bg-slate-700">
-            Copy
-          </button>
-          <button onClick={pasteAtCursor} className="rounded-md bg-slate-800 px-3 py-1.5 text-sm hover:bg-slate-700">
-            Paste
-          </button>
-
-          <span className="mx-1 h-6 w-px bg-slate-700" />
-
-          <button
-            onClick={() => applyInlineWrapper("**")}
-            className="rounded-md bg-slate-800 px-2.5 py-1.5 text-sm font-semibold hover:bg-slate-700"
-            title="Wrap selection with **bold**"
-          >
-            B
-          </button>
-          <button
-            onClick={() => applyInlineWrapper("*")}
-            className="rounded-md bg-slate-800 px-2.5 py-1.5 text-sm italic hover:bg-slate-700"
-            title="Wrap selection with *italic*"
-          >
-            I
-          </button>
-          <button
-            onClick={() => applyInlineWrapper("<u>", "</u>")}
-            className="rounded-md bg-slate-800 px-2.5 py-1.5 text-sm underline hover:bg-slate-700"
-            title="Wrap selection with <u>underline</u>"
-          >
-            U
-          </button>
-
-          <span className="mx-1 h-6 w-px bg-slate-700" />
-
-          <label className="inline-flex items-center gap-2 rounded-md bg-slate-800 px-3 py-1.5 text-sm hover:bg-slate-700">
-            <input
-              type="checkbox"
-              checked={wordWrap}
-              onChange={(e) => setWordWrap(e.target.checked)}
-              className="h-4 w-4 rounded border-slate-600 bg-slate-900"
-            />
-            Word Wrap
-          </label>
-
-          <button
-            onClick={() => setShowFindReplace((prev) => !prev)}
-            className="ml-auto rounded-md bg-cyan-700 px-3 py-1.5 text-sm hover:bg-cyan-600"
-          >
-            {showFindReplace ? "Hide Find/Replace" : "Find/Replace"}
-          </button>
-        </div>
-
-        {showFindReplace && (
-          <div className="mt-3 grid gap-2 rounded-xl border border-slate-700 bg-slate-950/60 p-3 md:grid-cols-[1fr_1fr_auto_auto_auto] md:items-center">
-            <input
-              value={findValue}
-              onChange={(e) => setFindValue(e.target.value)}
-              placeholder="Find"
-              className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none focus:border-cyan-500"
-            />
-            <input
-              value={replaceValue}
-              onChange={(e) => setReplaceValue(e.target.value)}
-              placeholder="Replace with"
-              className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none focus:border-cyan-500"
-            />
-            <label className="inline-flex items-center gap-2 rounded-md border border-slate-700 px-3 py-2 text-sm">
-              <input
-                type="checkbox"
-                checked={matchCase}
-                onChange={(e) => setMatchCase(e.target.checked)}
-                className="h-4 w-4 rounded border-slate-600 bg-slate-900"
-              />
-              Match case
-            </label>
-            <button onClick={findNext} className="rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700">
-              Find Next
-            </button>
-            <div className="flex gap-2">
-              <button onClick={replaceCurrent} className="rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700">
-                Replace
+          <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+            <div className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">Edit & View</div>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={() => runCommand("undo")} className="rounded-md bg-slate-700 px-3 py-2 text-sm hover:bg-slate-600">Undo</button>
+              <button onClick={() => runCommand("redo")} className="rounded-md bg-slate-700 px-3 py-2 text-sm hover:bg-slate-600">Redo</button>
+              <button onClick={() => runCommand("cut")} className="rounded-md bg-slate-700 px-3 py-2 text-sm hover:bg-slate-600">Cut</button>
+              <button onClick={() => runCommand("copy")} className="rounded-md bg-slate-700 px-3 py-2 text-sm hover:bg-slate-600">Copy</button>
+              <button onClick={() => runCommand("paste")} className="rounded-md bg-slate-700 px-3 py-2 text-sm hover:bg-slate-600">Paste</button>
+              <button
+                onClick={() => setWordWrap((v) => !v)}
+                className={`rounded-md px-3 py-2 text-sm font-medium ${wordWrap ? "bg-indigo-600 text-white hover:bg-indigo-500" : "bg-slate-700 hover:bg-slate-600"}`}
+              >
+                Word Wrap: {wordWrap ? "On" : "Off"}
               </button>
-              <button onClick={replaceAll} className="rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700">
-                Replace All
+              <button
+                onClick={() => setShowFind((v) => !v)}
+                className={`rounded-md px-3 py-2 text-sm font-medium ${showFind ? "bg-amber-600 text-white hover:bg-amber-500" : "bg-slate-700 hover:bg-slate-600"}`}
+              >
+                Find / Replace
               </button>
             </div>
           </div>
+        </div>
+
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            disabled={format !== "rtf"}
+            onClick={() => runCommand("bold")}
+            className="rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Bold
+          </button>
+          <button
+            disabled={format !== "rtf"}
+            onClick={() => runCommand("italic")}
+            className="rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Italic
+          </button>
+          <button
+            disabled={format !== "rtf"}
+            onClick={() => runCommand("underline")}
+            className="rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Underline
+          </button>
+          {format !== "rtf" && <p className="self-center text-xs text-slate-400">Formatting tools are available in RTF mode.</p>}
+        </div>
+      </header>
+
+      {showFind && (
+        <section className="mb-4 rounded-xl border border-slate-800 bg-slate-900/70 p-4">
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="text-sm">
+              <span className="mb-1 block text-slate-300">Find</span>
+              <input
+                value={findQuery}
+                onChange={(e) => {
+                  setFindQuery(e.target.value);
+                  setMatchCursor(-1);
+                }}
+                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 outline-none ring-sky-500 transition focus:ring-2"
+                placeholder="Search term"
+              />
+            </label>
+
+            <label className="text-sm">
+              <span className="mb-1 block text-slate-300">Replace</span>
+              <input
+                value={replaceQuery}
+                onChange={(e) => setReplaceQuery(e.target.value)}
+                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 outline-none ring-sky-500 transition focus:ring-2"
+                placeholder="Replacement text"
+              />
+            </label>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button onClick={findNext} className="rounded-md bg-sky-600 px-3 py-2 text-sm font-medium text-white hover:bg-sky-500">Find Next</button>
+            <button onClick={replaceCurrent} className="rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-500">Replace</button>
+            <button onClick={replaceAll} className="rounded-md bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-500">Replace All</button>
+            <label className="ml-1 inline-flex items-center gap-2 text-sm text-slate-300">
+              <input type="checkbox" checked={matchCase} onChange={(e) => setMatchCase(e.target.checked)} />
+              Match case
+            </label>
+            <span className="ml-auto text-xs text-slate-400">{findQuery ? `${matches.length} match(es)` : "Enter a search term"}</span>
+          </div>
+        </section>
+      )}
+
+      {notice && (
+        <div
+          className={`mb-4 rounded-lg border px-3 py-2 text-sm ${
+            notice.type === "error"
+              ? "border-rose-700 bg-rose-950/40 text-rose-200"
+              : notice.type === "success"
+                ? "border-emerald-700 bg-emerald-950/40 text-emerald-200"
+                : "border-sky-700 bg-sky-950/40 text-sky-200"
+          }`}
+        >
+          {notice.text}
+        </div>
+      )}
+
+      <section className="flex min-h-[55vh] flex-1 flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60 shadow-xl shadow-black/25">
+        <div className="flex items-center justify-between border-b border-slate-800 px-4 py-2 text-sm text-slate-300">
+          <div>
+            <span className="font-medium text-white">{docName}</span>
+            <span className="ml-2 text-slate-500">.{format}</span>
+            {isDirty && <span className="ml-2 text-amber-400">● modified</span>}
+          </div>
+          <div className="text-xs text-slate-400">Shortcuts: Ctrl/Cmd+S, Ctrl/Cmd+F, Ctrl/Cmd+B/I/U (RTF)</div>
+        </div>
+
+        {format === "txt" ? (
+          <textarea
+            ref={textareaRef}
+            value={textValue}
+            onChange={(e) => {
+              setTextValue(e.target.value);
+              setIsDirty(true);
+            }}
+            onClick={updateTxtCursor}
+            onKeyUp={updateTxtCursor}
+            onSelect={updateTxtCursor}
+            spellCheck={false}
+            wrap={wordWrap ? "soft" : "off"}
+            className={`h-full w-full flex-1 resize-none border-0 bg-slate-950/70 p-4 font-mono text-sm leading-6 text-slate-100 outline-none ${wordWrap ? "whitespace-pre-wrap" : "whitespace-pre"}`}
+            placeholder="Start writing your note..."
+          />
+        ) : (
+          <div
+            ref={richEditorRef}
+            contentEditable
+            suppressContentEditableWarning
+            onInput={(e) => {
+              setRichHtml((e.currentTarget as HTMLDivElement).innerHTML);
+              setIsDirty(true);
+            }}
+            className={`h-full w-full flex-1 overflow-auto bg-slate-950/70 p-4 font-mono text-sm leading-6 text-slate-100 outline-none ${wordWrap ? "whitespace-pre-wrap" : "whitespace-pre"}`}
+            style={{ minHeight: "40vh" }}
+          />
         )}
       </section>
 
-      {notice && (
-        <div className={`mb-3 rounded-xl border px-3 py-2 text-sm ${noticeClasses}`}>{notice.message}</div>
-      )}
-
-      <section className="flex-1 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-xl shadow-black/20">
-        <textarea
-          ref={editorRef}
-          value={content}
-          onChange={handleEditorInput}
-          onClick={updateSelectionFromEditor}
-          onKeyUp={updateSelectionFromEditor}
-          onSelect={updateSelectionFromEditor}
-          spellCheck={false}
-          wrap={wordWrap ? "soft" : "off"}
-          className="h-[60vh] w-full resize-none border-0 bg-slate-950/80 p-4 font-mono text-sm leading-6 text-slate-100 outline-none md:text-[15px]"
-          style={{ whiteSpace: wordWrap ? "pre-wrap" : "pre" }}
-          placeholder="Start typing your notes..."
-        />
-
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800 bg-slate-900 px-4 py-2 text-xs text-slate-300">
-          <div className="flex flex-wrap items-center gap-3">
-            <span>
-              Ln {line}, Col {column}
-            </span>
-            <span>{content.length} chars</span>
-            <span>{wordCount} words</span>
-          </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <span>Format: {format.toUpperCase()}</span>
-            <span>{wordWrap ? "Wrap: On" : "Wrap: Off"}</span>
-            <span>{isDirty ? "Edited" : "No changes"}</span>
-          </div>
+      <footer className="mt-3 grid gap-2 rounded-xl border border-slate-800 bg-slate-900/80 px-4 py-2 text-xs text-slate-300 md:grid-cols-5">
+        <div>
+          Line <span className="font-semibold text-white">{line}</span>, Col <span className="font-semibold text-white">{column}</span>
         </div>
-      </section>
+        <div>
+          Words <span className="font-semibold text-white">{words}</span>
+        </div>
+        <div>
+          Characters <span className="font-semibold text-white">{activeText.length}</span>
+        </div>
+        <div>
+          Format <span className="font-semibold uppercase text-white">{format}</span>
+        </div>
+        <div className="md:text-right">Word Wrap: <span className="font-semibold text-white">{wordWrap ? "Enabled" : "Disabled"}</span></div>
+      </footer>
     </div>
   );
 }
