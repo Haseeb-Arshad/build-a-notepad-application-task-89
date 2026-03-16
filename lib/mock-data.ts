@@ -1,287 +1,592 @@
-export type SupportedFileFormat = 'txt' | 'rtf';
+/**
+ * lib/mock-data.ts
+ *
+ * Provides self-contained sample data and helper utilities for the Notepad
+ * application. This keeps the UI functional and demonstrable without requiring
+ * any external API calls or file-system access (which is unavailable in a
+ * browser-based Next.js environment).
+ *
+ * All helpers are pure functions — no side effects, no external dependencies.
+ */
 
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/** Supported file formats for the notepad */
+export type FileFormat = 'txt' | 'rtf';
+
+/** Represents an in-memory document */
 export interface NotepadDocument {
+  /** Unique identifier */
   id: string;
+  /** Display name (without extension) */
   name: string;
+  /** File format */
+  format: FileFormat;
+  /** Raw text content */
   content: string;
-  format: SupportedFileFormat;
-  lastModified: number;
-  dirty: boolean;
+  /** ISO timestamp of last modification */
+  lastModified: string;
+  /** Whether the document has unsaved changes */
+  isDirty: boolean;
 }
 
-export interface CursorPosition {
+/** A single entry in the undo/redo history stack */
+export interface HistoryEntry {
+  content: string;
+  cursorLine: number;
+  cursorCol: number;
+}
+
+/** Result of a find operation */
+export interface FindResult {
+  /** 0-based character index of the match start */
+  index: number;
+  /** Length of the matched string */
+  length: number;
+  /** 1-based line number */
   line: number;
-  column: number;
-  selectionLength: number;
-}
-
-export interface FindMatch {
-  start: number;
-  end: number;
-  line: number;
+  /** 1-based column number */
   column: number;
 }
 
-const RTF_HEADER = '{\\rtf1\\ansi\\deff0\n';
-const RTF_FOOTER = '\n}';
-const FILE_NAME_SANITIZE_REGEX = /[<>:"/\\|?*\u0000-\u001F]/g;
+// ---------------------------------------------------------------------------
+// Sample documents
+// ---------------------------------------------------------------------------
 
-export const DEFAULT_FILE_NAME = 'untitled.txt';
+/**
+ * A curated set of sample documents that ship with the app so the user
+ * immediately sees a populated, functional notepad on first load.
+ */
+export const SAMPLE_DOCUMENTS: NotepadDocument[] = [
+  {
+    id: 'doc-welcome',
+    name: 'Welcome',
+    format: 'txt',
+    lastModified: new Date().toISOString(),
+    isDirty: false,
+    content: `Welcome to Notepad!
+===================
 
-export const DEFAULT_DOCUMENT_CONTENT = `Welcome to Notepad Pro\n\n• Create, open, and save local files\n• Use Find & Replace for quick edits\n• Toggle word wrap for readability\n\nStart typing to begin...`;
+This is a feature-rich text editor built with Next.js and TypeScript.
 
-export const FILE_FORMATS: ReadonlyArray<{
-  value: SupportedFileFormat;
-  label: string;
-  mime: string;
-}> = [
-  { value: 'txt', label: 'Plain Text (.txt)', mime: 'text/plain;charset=utf-8' },
-  { value: 'rtf', label: 'Rich Text Format (.rtf)', mime: 'application/rtf;charset=utf-8' },
+Features:
+  • Create, open, edit, and save text files
+  • Basic text formatting (Bold, Italic, Underline)
+  • Cut, Copy, Paste, Undo, Redo
+  • Find & Replace with match highlighting
+  • Word Wrap toggle
+  • Status bar with live cursor position, word count, and character count
+  • Multiple file format support (.txt, .rtf)
+  • Dark mode support
+
+Getting Started:
+  1. Type or paste your text in this editor area.
+  2. Use the toolbar above to format text or manage files.
+  3. Press Ctrl+S (or Cmd+S on Mac) to save.
+  4. Use Ctrl+F to open Find & Replace.
+
+Keyboard Shortcuts:
+  Ctrl+N        New document
+  Ctrl+O        Open file
+  Ctrl+S        Save
+  Ctrl+Shift+S  Save As
+  Ctrl+Z        Undo
+  Ctrl+Y        Redo
+  Ctrl+F        Find & Replace
+  Ctrl+B        Bold
+  Ctrl+I        Italic
+  Ctrl+U        Underline
+
+Enjoy writing!
+`,
+  },
+  {
+    id: 'doc-meeting-notes',
+    name: 'Meeting Notes',
+    format: 'txt',
+    lastModified: new Date(Date.now() - 86_400_000).toISOString(),
+    isDirty: false,
+    content: `Meeting Notes — Product Sync
+Date: ${new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+Attendees: Alice, Bob, Carol, Dave
+
+Agenda:
+  1. Sprint review
+  2. Roadmap discussion
+  3. Action items
+
+Sprint Review:
+  - Completed 18 of 21 story points
+  - Notepad feature shipped to staging ✓
+  - Performance improvements: 40% faster load time
+  - 3 bugs deferred to next sprint
+
+Roadmap Discussion:
+  - Q3 focus: mobile responsiveness and offline support
+  - Considering PWA approach for desktop-like experience
+  - RTF export to be prioritised after user feedback
+
+Action Items:
+  [ ] Alice  — Write technical spec for offline mode by Friday
+  [ ] Bob    — Fix deferred bugs (issues #42, #43, #44)
+  [ ] Carol  — User research interviews scheduled for next week
+  [ ] Dave   — Update staging environment with latest build
+
+Next Meeting: Same time next week.
+`,
+  },
+  {
+    id: 'doc-quick-notes',
+    name: 'Quick Notes',
+    format: 'txt',
+    lastModified: new Date(Date.now() - 3_600_000).toISOString(),
+    isDirty: false,
+    content: `Quick Notes
+-----------
+
+TODO:
+  - Buy groceries
+  - Call dentist
+  - Review PR #87
+  - Update README
+
+Ideas:
+  - Dark mode toggle in status bar
+  - Auto-save every 30 seconds
+  - Recent files list in File menu
+  - Syntax highlighting for code files
+
+Links:
+  - https://nextjs.org/docs
+  - https://tailwindcss.com/docs
+  - https://www.typescriptlang.org/docs/
+
+Random thoughts:
+  The best code is code you don't have to write.
+  Simplicity is the ultimate sophistication.
+  Make it work, make it right, make it fast.
+`,
+  },
+  {
+    id: 'doc-rtf-sample',
+    name: 'RTF Sample',
+    format: 'rtf',
+    lastModified: new Date(Date.now() - 172_800_000).toISOString(),
+    isDirty: false,
+    content: `RTF Document Sample
+===================
+
+This document demonstrates RTF format support in the Notepad application.
+
+In a full desktop implementation, RTF files would preserve rich formatting
+such as bold, italic, underline, font sizes, and colours when saved to disk.
+
+For this browser-based demo, the content is stored as plain text internally
+and the .rtf extension is tracked for file-format awareness.
+
+Sample formatted content:
+
+  HEADING: Project Overview
+  -------------------------
+  This project aims to deliver a cross-platform notepad application that
+  supports both plain text and rich text formats.
+
+  Key Metrics:
+    • Target load time: < 1 second
+    • Supported formats: TXT, RTF
+    • Max document size: 10 MB
+    • Undo history depth: 100 steps
+
+  Status: In Progress
+`,
+  },
 ];
 
-function timestamp(): number {
-  return Date.now();
-}
+// ---------------------------------------------------------------------------
+// Document helpers
+// ---------------------------------------------------------------------------
 
-function randomIdChunk(): string {
-  return Math.random().toString(36).slice(2, 10);
-}
-
-export function generateDocumentId(): string {
-  return `doc_${timestamp().toString(36)}_${randomIdChunk()}`;
-}
-
-export function inferFormatFromFilename(fileName: string): SupportedFileFormat {
-  const lowered = fileName.trim().toLowerCase();
-  if (lowered.endsWith('.rtf')) {
-    return 'rtf';
-  }
-  return 'txt';
-}
-
-export function sanitizeFileName(rawName: string, fallback = DEFAULT_FILE_NAME): string {
-  const cleaned = rawName.replace(FILE_NAME_SANITIZE_REGEX, '').trim();
-  if (!cleaned) {
-    return fallback;
-  }
-  return cleaned;
-}
-
-export function ensureExtension(name: string, format: SupportedFileFormat): string {
-  const safe = sanitizeFileName(name);
-  const expectedExtension = `.${format}`;
-  if (safe.toLowerCase().endsWith(expectedExtension)) {
-    return safe;
-  }
-
-  // Remove existing extension before appending a supported one.
-  const base = safe.replace(/\.[a-zA-Z0-9]+$/, '');
-  return `${base}${expectedExtension}`;
-}
-
-export function createNewDocument(
-  overrides?: Partial<Pick<NotepadDocument, 'name' | 'content' | 'format'>>,
+/**
+ * Creates a brand-new blank document with a generated ID and timestamp.
+ *
+ * @param name   - Optional display name (defaults to 'Untitled')
+ * @param format - File format (defaults to 'txt')
+ */
+export function createBlankDocument(
+  name = 'Untitled',
+  format: FileFormat = 'txt'
 ): NotepadDocument {
-  const format = overrides?.format ?? inferFormatFromFilename(overrides?.name ?? DEFAULT_FILE_NAME);
-  const name = ensureExtension(overrides?.name ?? DEFAULT_FILE_NAME, format);
-
   return {
-    id: generateDocumentId(),
+    id: `doc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     name,
-    content: overrides?.content ?? '',
     format,
-    lastModified: timestamp(),
-    dirty: false,
+    content: '',
+    lastModified: new Date().toISOString(),
+    isDirty: false,
   };
 }
 
-export function markDocumentDirty(doc: NotepadDocument, dirty = true): NotepadDocument {
+/**
+ * Returns a copy of the document marked as dirty (unsaved changes).
+ */
+export function markDirty(doc: NotepadDocument): NotepadDocument {
+  return { ...doc, isDirty: true, lastModified: new Date().toISOString() };
+}
+
+/**
+ * Returns a copy of the document marked as clean (saved).
+ */
+export function markClean(doc: NotepadDocument): NotepadDocument {
+  return { ...doc, isDirty: false };
+}
+
+/**
+ * Derives the full file name including extension from a document.
+ *
+ * @example getFileName({ name: 'Notes', format: 'txt' }) // => 'Notes.txt'
+ */
+export function getFileName(doc: Pick<NotepadDocument, 'name' | 'format'>): string {
+  const safeName = doc.name.trim() || 'Untitled';
+  // Avoid double extension if the user already typed one
+  if (safeName.toLowerCase().endsWith(`.${doc.format}`)) return safeName;
+  return `${safeName}.${doc.format}`;
+}
+
+// ---------------------------------------------------------------------------
+// Text statistics
+// ---------------------------------------------------------------------------
+
+/**
+ * Counts the number of words in a string.
+ * Words are sequences of non-whitespace characters.
+ */
+export function countWords(text: string): number {
+  if (!text.trim()) return 0;
+  return text.trim().split(/\s+/).length;
+}
+
+/**
+ * Counts the total number of characters (including whitespace).
+ */
+export function countChars(text: string): number {
+  return text.length;
+}
+
+/**
+ * Counts the number of lines in a string.
+ * An empty string is considered to have 1 line.
+ */
+export function countLines(text: string): number {
+  if (text === '') return 1;
+  return text.split('\n').length;
+}
+
+/**
+ * Given a flat text string and a 0-based character offset, returns the
+ * 1-based line and column numbers at that offset.
+ *
+ * @param text   - The full document text
+ * @param offset - 0-based character offset (e.g. textarea.selectionStart)
+ */
+export function offsetToLineCol(
+  text: string,
+  offset: number
+): { line: number; column: number } {
+  // Clamp offset to valid range
+  const safeOffset = Math.max(0, Math.min(offset, text.length));
+  const before = text.slice(0, safeOffset);
+  const lines = before.split('\n');
   return {
-    ...doc,
-    dirty,
-    lastModified: timestamp(),
-  };
-}
-
-export function toDownloadPayload(content: string, format: SupportedFileFormat): string {
-  if (format === 'txt') {
-    return content;
-  }
-
-  const escaped = content
-    .replace(/\\/g, '\\\\')
-    .replace(/{/g, '\\{')
-    .replace(/}/g, '\\}')
-    .replace(/\n/g, '\\par\n');
-
-  return `${RTF_HEADER}${escaped}${RTF_FOOTER}`;
-}
-
-export function fromFilePayload(payload: string, format: SupportedFileFormat): string {
-  if (format === 'txt') {
-    return payload;
-  }
-
-  // Minimal, defensive RTF text extraction for lightweight notepad support.
-  // We do not try to preserve advanced styles; we extract readable plain text.
-  const withoutHeader = payload
-    .replace(/^\{\\rtf1[\s\S]*?\n/, '')
-    .replace(/\n\}$/, '')
-    .replace(/\\par[d]?\s?/g, '\n')
-    .replace(/\\'[0-9a-fA-F]{2}/g, '')
-    .replace(/\\[a-zA-Z]+-?\d*\s?/g, '')
-    .replace(/[{}]/g, '')
-    .replace(/\\\\/g, '\\')
-    .trim();
-
-  return withoutHeader;
-}
-
-export function getMimeType(format: SupportedFileFormat): string {
-  const item = FILE_FORMATS.find((entry) => entry.value === format);
-  return item?.mime ?? 'text/plain;charset=utf-8';
-}
-
-export async function readFileContent(file: File): Promise<{ content: string; format: SupportedFileFormat }> {
-  const format = inferFormatFromFilename(file.name);
-
-  try {
-    const text = await file.text();
-    return {
-      content: fromFilePayload(text, format),
-      format,
-    };
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : 'unknown read failure';
-    throw new Error(`Unable to read file \"${file.name}\": ${reason}`);
-  }
-}
-
-export function downloadToLocalFile(args: {
-  fileName: string;
-  content: string;
-  format: SupportedFileFormat;
-}): void {
-  if (typeof window === 'undefined') {
-    throw new Error('Local file download is only available in the browser environment.');
-  }
-
-  const resolvedName = ensureExtension(args.fileName, args.format);
-  const payload = toDownloadPayload(args.content, args.format);
-  const blob = new Blob([payload], { type: getMimeType(args.format) });
-  const url = URL.createObjectURL(blob);
-
-  try {
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = resolvedName;
-    anchor.rel = 'noopener';
-    anchor.style.display = 'none';
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
-
-export function getAcceptedFileTypes(): string {
-  return '.txt,.rtf,text/plain,application/rtf';
-}
-
-export function calculateCursorPosition(text: string, caretIndex: number, selectionLength = 0): CursorPosition {
-  const safeIndex = Math.max(0, Math.min(caretIndex, text.length));
-  const lines = text.slice(0, safeIndex).split('\n');
-
-  return {
-    line: Math.max(1, lines.length),
+    line: lines.length,
     column: (lines[lines.length - 1]?.length ?? 0) + 1,
-    selectionLength: Math.max(0, selectionLength),
   };
 }
 
-export function findMatches(
-  content: string,
+// ---------------------------------------------------------------------------
+// Find & Replace helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Finds all occurrences of a search string within text.
+ * Returns an array of FindResult objects with position information.
+ *
+ * @param text          - The document text to search
+ * @param query         - The search string
+ * @param caseSensitive - Whether the search is case-sensitive (default: false)
+ * @param wholeWord     - Whether to match whole words only (default: false)
+ */
+export function findAll(
+  text: string,
   query: string,
-  options?: { caseSensitive?: boolean },
-): FindMatch[] {
-  if (!query) {
+  caseSensitive = false,
+  wholeWord = false
+): FindResult[] {
+  if (!query) return [];
+
+  const results: FindResult[] = [];
+  const flags = caseSensitive ? 'g' : 'gi';
+
+  let pattern: RegExp;
+  try {
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const wordBoundary = wholeWord ? '\\b' : '';
+    pattern = new RegExp(`${wordBoundary}${escaped}${wordBoundary}`, flags);
+  } catch {
+    // If the pattern is somehow invalid, return no results
     return [];
   }
 
-  const source = options?.caseSensitive ? content : content.toLowerCase();
-  const needle = options?.caseSensitive ? query : query.toLowerCase();
-  const matches: FindMatch[] = [];
-
-  let index = 0;
-  while (index < source.length) {
-    const at = source.indexOf(needle, index);
-    if (at < 0) {
-      break;
-    }
-
-    const position = calculateCursorPosition(content, at);
-    matches.push({
-      start: at,
-      end: at + query.length,
-      line: position.line,
-      column: position.column,
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    const { line, column } = offsetToLineCol(text, match.index);
+    results.push({
+      index: match.index,
+      length: match[0].length,
+      line,
+      column,
     });
-
-    // Step forward by at least one char to avoid infinite loops.
-    index = at + Math.max(needle.length, 1);
+    // Prevent infinite loop on zero-length matches
+    if (match[0].length === 0) pattern.lastIndex++;
   }
 
-  return matches;
+  return results;
 }
 
-export function replaceAllMatches(
-  content: string,
+/**
+ * Replaces a single occurrence of a search string at a given index.
+ *
+ * @param text        - Original document text
+ * @param index       - 0-based start index of the match
+ * @param matchLength - Length of the matched string
+ * @param replacement - Replacement string
+ */
+export function replaceSingle(
+  text: string,
+  index: number,
+  matchLength: number,
+  replacement: string
+): string {
+  return text.slice(0, index) + replacement + text.slice(index + matchLength);
+}
+
+/**
+ * Replaces all occurrences of a search string in the text.
+ *
+ * @param text          - Original document text
+ * @param query         - Search string
+ * @param replacement   - Replacement string
+ * @param caseSensitive - Whether the search is case-sensitive
+ * @param wholeWord     - Whether to match whole words only
+ */
+export function replaceAll(
+  text: string,
   query: string,
   replacement: string,
-  options?: { caseSensitive?: boolean },
-): { content: string; count: number } {
-  if (!query) {
-    return { content, count: 0 };
+  caseSensitive = false,
+  wholeWord = false
+): { result: string; count: number } {
+  if (!query) return { result: text, count: 0 };
+
+  const flags = caseSensitive ? 'g' : 'gi';
+  let pattern: RegExp;
+  try {
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const wordBoundary = wholeWord ? '\\b' : '';
+    pattern = new RegExp(`${wordBoundary}${escaped}${wordBoundary}`, flags);
+  } catch {
+    return { result: text, count: 0 };
   }
 
-  const matches = findMatches(content, query, options);
-  if (matches.length === 0) {
-    return { content, count: 0 };
+  let count = 0;
+  const result = text.replace(pattern, () => {
+    count++;
+    return replacement;
+  });
+
+  return { result, count };
+}
+
+// ---------------------------------------------------------------------------
+// Undo / Redo history
+// ---------------------------------------------------------------------------
+
+/** Maximum number of undo steps to retain */
+export const MAX_HISTORY_DEPTH = 100;
+
+/**
+ * Pushes a new entry onto the undo stack, discarding any redo history.
+ * Enforces the maximum history depth by dropping the oldest entry.
+ *
+ * @param stack   - Current undo stack (oldest → newest)
+ * @param entry   - New state to push
+ */
+export function pushHistory(
+  stack: HistoryEntry[],
+  entry: HistoryEntry
+): HistoryEntry[] {
+  const next = [...stack, entry];
+  if (next.length > MAX_HISTORY_DEPTH) next.shift();
+  return next;
+}
+
+// ---------------------------------------------------------------------------
+// File download helper (browser-safe)
+// ---------------------------------------------------------------------------
+
+/**
+ * Triggers a browser file download for the given text content.
+ * This is the closest equivalent to "Save to disk" available in a
+ * browser-based environment without the File System Access API.
+ *
+ * @param content  - Text content to save
+ * @param fileName - Desired file name (e.g. 'Notes.txt')
+ * @param mimeType - MIME type (defaults to 'text/plain')
+ */
+export function downloadTextFile(
+  content: string,
+  fileName: string,
+  mimeType = 'text/plain;charset=utf-8'
+): void {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  anchor.style.display = 'none';
+  document.body.appendChild(anchor);
+  anchor.click();
+  // Clean up after a short delay to allow the download to start
+  setTimeout(() => {
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+  }, 100);
+}
+
+/**
+ * Reads a File object as text using the FileReader API.
+ * Returns a Promise that resolves with the file content.
+ *
+ * @param file - The File object from an <input type="file"> element
+ */
+export function readFileAsText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const result = e.target?.result;
+      if (typeof result === 'string') {
+        resolve(result);
+      } else {
+        reject(new Error('Failed to read file as text'));
+      }
+    };
+    reader.onerror = () => reject(new Error(`FileReader error: ${reader.error?.message ?? 'unknown'}`));
+    reader.readAsText(file, 'utf-8');
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Format detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Extracts the file format from a file name.
+ * Returns 'txt' as the fallback for unknown or missing extensions.
+ *
+ * @example getFormatFromName('notes.rtf') // => 'rtf'
+ * @example getFormatFromName('readme')    // => 'txt'
+ */
+export function getFormatFromName(name: string): FileFormat {
+  const ext = name.split('.').pop()?.toLowerCase();
+  if (ext === 'rtf') return 'rtf';
+  return 'txt';
+}
+
+/**
+ * Returns the MIME type string for a given file format.
+ */
+export function getMimeType(format: FileFormat): string {
+  switch (format) {
+    case 'rtf':
+      return 'application/rtf';
+    case 'txt':
+    default:
+      return 'text/plain;charset=utf-8';
   }
+}
 
-  let output = '';
-  let cursor = 0;
+/**
+ * Returns the accept string for a file input element.
+ * Restricts selection to supported formats.
+ */
+export const FILE_INPUT_ACCEPT = '.txt,.rtf,text/plain,application/rtf';
 
-  for (const match of matches) {
-    output += content.slice(cursor, match.start);
-    output += replacement;
-    cursor = match.end;
-  }
+// ---------------------------------------------------------------------------
+// Formatting helpers (for toolbar actions)
+// ---------------------------------------------------------------------------
 
-  output += content.slice(cursor);
-
+/**
+ * Wraps the selected text in a textarea with the given prefix/suffix markers.
+ * Returns the new full text and the updated selection range.
+ *
+ * Used for bold (**), italic (*), underline (__ __) markers in plain-text mode.
+ *
+ * @param text       - Full document text
+ * @param start      - Selection start (textarea.selectionStart)
+ * @param end        - Selection end (textarea.selectionEnd)
+ * @param prefix     - Marker to insert before selection
+ * @param suffix     - Marker to insert after selection (defaults to prefix)
+ */
+export function wrapSelection(
+  text: string,
+  start: number,
+  end: number,
+  prefix: string,
+  suffix = prefix
+): { text: string; selectionStart: number; selectionEnd: number } {
+  const before = text.slice(0, start);
+  const selected = text.slice(start, end);
+  const after = text.slice(end);
+  const newText = `${before}${prefix}${selected}${suffix}${after}`;
   return {
-    content: output,
-    count: matches.length,
+    text: newText,
+    selectionStart: start + prefix.length,
+    selectionEnd: end + prefix.length,
   };
 }
 
-export const sampleFileEntries: ReadonlyArray<NotepadDocument> = [
-  {
-    id: 'sample_1',
-    name: 'meeting-notes.txt',
-    format: 'txt',
-    content: 'Meeting Notes\n\n- Confirm milestone dates\n- Review QA sign-off checklist\n- Schedule deployment window',
-    lastModified: timestamp(),
-    dirty: false,
-  },
-  {
-    id: 'sample_2',
-    name: 'quick-draft.rtf',
-    format: 'rtf',
-    content: 'Draft Heading\n\nThis is a lightweight RTF-compatible draft loaded as plain text in the editor.',
-    lastModified: timestamp(),
-    dirty: false,
-  },
+// ---------------------------------------------------------------------------
+// Keyboard shortcut map (for documentation / help overlay)
+// ---------------------------------------------------------------------------
+
+export interface ShortcutEntry {
+  keys: string;
+  description: string;
+  category: 'file' | 'edit' | 'format' | 'view' | 'search';
+}
+
+export const KEYBOARD_SHORTCUTS: ShortcutEntry[] = [
+  // File
+  { keys: 'Ctrl+N', description: 'New document', category: 'file' },
+  { keys: 'Ctrl+O', description: 'Open file', category: 'file' },
+  { keys: 'Ctrl+S', description: 'Save', category: 'file' },
+  { keys: 'Ctrl+Shift+S', description: 'Save As', category: 'file' },
+  // Edit
+  { keys: 'Ctrl+Z', description: 'Undo', category: 'edit' },
+  { keys: 'Ctrl+Y', description: 'Redo', category: 'edit' },
+  { keys: 'Ctrl+X', description: 'Cut', category: 'edit' },
+  { keys: 'Ctrl+C', description: 'Copy', category: 'edit' },
+  { keys: 'Ctrl+V', description: 'Paste', category: 'edit' },
+  { keys: 'Ctrl+A', description: 'Select all', category: 'edit' },
+  // Format
+  { keys: 'Ctrl+B', description: 'Bold', category: 'format' },
+  { keys: 'Ctrl+I', description: 'Italic', category: 'format' },
+  { keys: 'Ctrl+U', description: 'Underline', category: 'format' },
+  // View
+  { keys: 'Ctrl+W', description: 'Toggle word wrap', category: 'view' },
+  // Search
+  { keys: 'Ctrl+F', description: 'Find & Replace', category: 'search' },
+  { keys: 'F3', description: 'Find next', category: 'search' },
+  { keys: 'Shift+F3', description: 'Find previous', category: 'search' },
 ];
