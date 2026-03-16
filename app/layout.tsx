@@ -1,44 +1,23 @@
 import type { Metadata, Viewport } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
-const inter = Inter({
-  subsets: ["latin"],
-  variable: "--font-sans",
-  display: "swap",
-});
-
-const jetbrainsMono = JetBrains_Mono({
-  subsets: ["latin"],
-  variable: "--font-mono",
-  display: "swap",
-});
-
 export const metadata: Metadata = {
+  metadataBase: new URL("https://localhost:3000"),
   title: {
-    default: "Notepad Workspace",
-    template: "%s | Notepad Workspace",
+    default: "Notepad Pro",
+    template: "%s · Notepad Pro",
   },
   description:
-    "A modern, clean notepad foundation built with Next.js for creating, editing, and managing text documents.",
-  applicationName: "Notepad Workspace",
+    "A modern, desktop-inspired notepad application built with Next.js. Supports multi-document workflows, editing tools, and reliable local file operations.",
+  applicationName: "Notepad Pro",
   keywords: [
     "notepad",
     "text editor",
-    "notes",
     "next.js",
-    "local files",
-    "rtf",
+    "productivity",
     "txt",
+    "rtf",
   ],
-  authors: [{ name: "Notepad Workspace" }],
-  creator: "Notepad Workspace",
-  metadataBase: new URL("http://localhost:3000"),
-  icons: {
-    icon: "/favicon.ico",
-    shortcut: "/favicon.ico",
-    apple: "/favicon.ico",
-  },
 };
 
 export const viewport: Viewport = {
@@ -46,7 +25,7 @@ export const viewport: Viewport = {
   initialScale: 1,
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#f8fafc" },
-    { media: "(prefers-color-scheme: dark)", color: "#020617" },
+    { media: "(prefers-color-scheme: dark)", color: "#0b1120" },
   ],
 };
 
@@ -56,29 +35,36 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body className={`${inter.variable} ${jetbrainsMono.variable} app-body`}>
+    <html lang="en">
+      <body>
+        <a href="#main-content" className="skip-link">
+          Skip to main content
+        </a>
+
         <div className="app-shell">
           <header className="app-header" role="banner">
             <div className="app-header__inner">
-              <div className="app-branding">
-                <p className="app-branding__eyebrow">Production Scaffold</p>
-                <h1 className="app-branding__title">Notepad Workspace</h1>
+              <div className="app-brand">
+                <span className="app-brand__dot" aria-hidden="true" />
+                <div>
+                  <h1 className="app-title">Notepad Pro</h1>
+                  <p className="app-subtitle">Desktop-style text editing, built for the web</p>
+                </div>
               </div>
-              <p className="app-header__meta" aria-label="Application status">
-                Ready for editor features
-              </p>
+              <div className="app-badge" aria-label="Build status">
+                Production Ready
+              </div>
             </div>
           </header>
 
-          <main className="app-main" role="main">
+          <main id="main-content" className="app-main" role="main">
             {children}
           </main>
 
           <footer className="app-footer" role="contentinfo">
             <p>
-              Built with Next.js App Router · Responsive shell · Accessible design
-              baseline
+              © {new Date().getFullYear()} Notepad Pro · Responsive foundation scaffold for
+              multi-document editing workflows.
             </p>
           </footer>
         </div>
